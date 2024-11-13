@@ -1,76 +1,167 @@
-load("IAGOS DF.Rdata")
+##########
+## TO RUN IF YOU DOWNLOADED THE FILE "IAGOS smooth data.RData" FROM
+## https://github.com/riifi/Functional-Gaussian-Graphical-Regression-Model/tree/main
+## "IAGOS smooth data.RData" CONTAINS SMOOTHED DATA ( y_n and x_n as exposed in the section "Evaluation of the scores")
+##
+## If you prefer to download the data from https://iagos.aeris-data.fr/download/ to get
+## the smoothed data from the original dataset, the "IAGOS data import.R" file contains the code to import 
+## the nc4-format data and generate the scores y_n and x_n as exposed in the "Evaluation of the scores" section.
+##
+##########################
+# FUNCTIONS
+#
+library(cglasso) # last cglasso'library version: download.file("https://github.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/raw/main/02%20-%20Simulations/SimulationStudy2/CGLASSO/cglasso_2.0.5.tar.gz", destfile = "cglasso_2.0.5.tar.gz")
+source("https://raw.githubusercontent.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/main/01%20-%20RCode/datajcggm.R")
+source("https://raw.githubusercontent.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/main/01%20-%20RCode/jcglasso.R")
+source("https://raw.githubusercontent.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/main/01%20-%20RCode/jcggm.R")
+source("https://raw.githubusercontent.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/main/01%20-%20RCode/gof.R")
+source("https://raw.githubusercontent.com/gianluca-sottile/Hematopoiesis-network-inference-from-RT-qPCR-data/main/01%20-%20RCode/to_graph.R")
+KLCV.fixed.X <- function(tht.stim, eps.Y, L ){
+  npar <- dim(tht.stim[[1]])[3]
+  N <- dim( eps.Y[[l]])[1]
+  KLCV <- rep(0, npar)
+  S <- vector(mode = "list", length = L)
+  for(r in seq_len(npar)){
+    for(l in seq_len(L)){
+      S <- t( eps.Y[[l]])%*% eps.Y[[l]]/N
+      KLCV[r] <- KLCV[r] - (1/(2*L) )* (log(det(tht.stim[[l]][,,r])) - sum(diag(tht.stim[[l]][,,r] %*% S)))
+      
+      # BIAS
+      I <- tht.stim[[l]][,,r] != 0
+      bias <- rep(NA, nrho)
+      for(n in seq_len(N)){
+        Sn <-  eps.Y[[l]][n,] %*% t( eps.Y[[l]][n,])
+        KLCV[r] <- KLCV[r] + (1/(L*N*(N*L-1))) * sum((solve(tht.stim[[l]][,,r]) - Sn) * I * (tht.stim[[l]][,,r]%*%((S-Sn)* I) %*% tht.stim[[l]][,,r] ))
+      }}}
+  KLCV <- KLCV
+  return(KLCV) 
+}
+lambda.iteration <- function( data , rho, L, perc.lmbd.seq, p, weights ){
+  
+  tmp <- jcglasso(data = data, rho = rho, lambda = 1E10, nu = 0, 
+                  alpha1 = 0, alpha2 = 0, alpha3 = 0)
+  
+  lambda_max <- max(sqrt(rowSums(sapply(seq_len(L), function(k) {
+    R <- tmp$R[,,k,1,1] / n
+    X <- tmp$Zipt[,tmp$InfoStructure$id_X,k,1,1]
+    Tht <- coef(tmp, "Theta", class.id = k, rho.id = 1, lambda.id = 1)
+    (weights[k] * (t(X) %*% R %*% Tht))^2
+  }))))
+  
+  lambda1 <- perc.lmbd.seq * lambda_max
+  
+  out <- jcglasso(data = data , rho = rho, lambda = lambda1, nu = 0, 
+                  alpha1 = 0, alpha2 = 0, alpha3 = 0)
+  
+  b.stim <- tht.stimYX <- tht.stimY <- sig.stim <- tht.stimY <- vector(mode = "list", length = L)
+  for(l in seq_len(L))
+  {
+    b.stim[[l]] <- out$B[-1, , l, , ]
+    tht.stimYX[[l]] <- out$Tht[,, l, , ]
+    tht.stimY[[l]] <- tht.stimYX[[l]][ 1:p , 1:p ,]
+  }
+  
+  out <- list( lambda = lambda1 , out.jcglasso = out, tht.stimYX = tht.stimYX, tht.stimY = tht.stimY,
+               b.stim = b.stim, data = out$Z )
+  return( out )
+}
+rho.iteration <- function( y, x, n, p, q, lambda, L, perc.rho.seq ){
+  
+  tmp <- jcglasso(data = data.list, rho = 1E10, lambda = lambda,, nu = 0, 
+                  alpha1 = 0, alpha2 = 0, alpha3 = 0)
+  
+  rho_max <- max(sqrt(rowSums(sapply(seq_len(L), function(k) {
+    y <- tmp$Zipt[,tmp$InfoStructure$id_Y,k,1,1]
+    mu <- fitted(tmp, class.id = k, lambda.id = 1)
+    R <- y - mu
+    (weights[k] * crossprod(R) / n)[outer(1:p, 1:p, "<")]^2
+  }))))
+  
+  rho1 <- perc.rho.seq * rho_max
+  out.tht <-  jcglasso(data = data.list, rho = rho1, lambda = lambda , nu = 0, 
+                       alpha1 = 0, alpha2 = 0, alpha3 = 0)
+  
+  tht.stim <- sig.stim <- b <- vector(mode = "list", length = L)
+  for(l in seq_len(L))
+  {
+    tht.stim[[l]] <- out.tht$Tht[ , , l, 1 , ] 
+    sig.stim[[l]] <- out.tht$Sgm[ , , l, 1, ]
+    b[[l]] <- out.tht$B[ -1, ,l ,1 , ]
+  }
+  out <- list( rho = out.tht$rho , out = out.tht,  
+               tht.stim = tht.stim , b.stim = b , data = out.tht$Z)
+  return(out)
+}
+KLCV.gauss2 <- function(tht.stimYX, b.stim, data, L, whole.tht ){
+  npar <- dim(tht.stimYX[[1]])[3]
+  N <- dim(data[[l]]$Y)[1]
+  KLCV <- rep(0, npar)
+  S.b <- vector(mode = "list", length = L)
+  #  H <- length(b.stim)     H and L are the same
+  for(r in seq_len(npar))
+  {
+    for(l in seq_len(L))
+    {
+      if( !whole.tht){
+        S.b.y <- t(data[[l]]$Y - data[[l]]$X %*% b.stim[[l]][,,r])%*%(data[[l]]$Y - data[[l]]$X %*% b.stim[[l]][,,r])/N
+        S.x <- (t(data[[l]]$X) %*% data[[l]]$X) / N
+        if( is.matrix(tht.stimYX[[l]][-(1:p),-(1:p),r] ) ) 
+          KLCV[r] <- KLCV[r] - ( 1/(2*L) ) * ( log(det(tht.stimYX[[l]][-(1:p),-(1:p),r])) - sum(diag(tht.stimYX[[l]][-(1:p),-(1:p),r] %*% S.x)) + log(det(tht.stimYX[[l]][1:p,1:p,r])) - sum(diag(tht.stimYX[[l]][1:p,1:p,r] %*% S.b.y)))
+        else 
+          KLCV[r] <- KLCV[r] - ( 1/(2*L) ) * ( - tht.stimYX[[l]][-(1:p),-(1:p),r] %*% S.x + log(det(tht.stimYX[[l]][1:p,1:p,r])) - sum(diag(tht.stimYX[[l]][1:p,1:p,r] %*% S.b.y)))
+      }
+      
+      if( whole.tht ){
+        eps.y <- data[[l]]$Y - data[[l]]$X %*% b.stim[[l]][,,r]
+        S <- (t(cbind(eps.y, data[[l]]$X)) %*% cbind(eps.y, data[[l]]$X)) / N
+        dimnames(S)[[1]] <- dimnames(S)[[2]] <- dimnames(tht.stimYX[[1]])$response
+        KLCV[r] <- KLCV[r] - ( 1/(2*L) ) * ( log(det(tht.stimYX[[l]][,,r])) - sum(diag(tht.stimYX[[l]][,,r] %*% S)))
+        
+      }
+      
+      # BIAS
+      if( !whole.tht){
+        I.x <- tht.stimYX[[l]][-(1:p),-(1:p),r] != 0
+        I.y <- tht.stimYX[[l]][1:p,1:p,r] != 0
+        bias <- rep(NA, nrho)
+        for(n in seq_len(N)){
+          Sn.b.y <- t(data[[l]]$Y[n,] - data[[l]]$X[n,] %*% b.stim[[l]][,,r])%*%(data[[l]]$Y[n,] - data[[l]]$X[n,] %*% b.stim[[l]][,,r])
+          Sn.x <- data[[l]]$X[n,]%*%t(data[[l]]$X[n,])
+          
+          a <- sum( (solve(tht.stimYX[[l]][-(1:p),-(1:p),r]) - Sn.x) * I.x * (tht.stimYX[[l]][-(1:p),-(1:p),r]%*%((S.x - Sn.x) * I.x) %*% tht.stimYX[[l]][-(1:p),-(1:p),r] ))
+          b <- sum( (solve(tht.stimYX[[l]][1:p,1:p,r]) - Sn.b.y) * I.y * (tht.stimYX[[l]][1:p,1:p,r]%*%((S.b.y-Sn.b.y)* I.y) %*% tht.stimYX[[l]][1:p,1:p,r] ))
+          KLCV[r] <- KLCV[r] + 1/(L*N*(N*L-1)) * (a + b)
+        }
+      }
+      if(whole.tht){
+        I <- tht.stimYX[[l]][,,r] != 0
+        bias <- rep(NA, nrho)
+        for(n in seq_len(N)){
+          eps.y.n <- data[[l]]$Y[n,] - data[[l]]$X[n,] %*% b.stim[[l]][,,r]
+          Sn <- c(eps.y.n, data[[l]]$X[n,])%*%t(c(eps.y.n, data[[l]]$X[n,]))
+          dimnames(Sn)[[1]] <- dimnames(Sn)[[2]] <- dimnames(tht.stimYX[[1]])$response
+          a <- sum( (solve(tht.stimYX[[l]][,,r]) - Sn) * I * ( tht.stimYX[[l]][, , r]%*%((S - Sn) * I) %*% tht.stimYX[[l]][,,r] ))
+          KLCV[r] <- KLCV[r] + 1/(L*N*(N*L-1)) * a
+        }
+      }
+    }
+  }
+  KLCV
+  return(KLCV) 
+}
 
-df <- bind_rows(DF)
+
+###############
+# Import the data
+load("IAGOS smooth data.RData") 
 
 y.names <- c("O3", "NO", "H2O", "CO"); x.names <- "temp"
 p <- length( y.names); q <- length(x.names)
-
-DF1 <- DF
-N <- length(DF1)
-
-DF <- vector( mode = "list", length = N)
-id.rm <- id.no.var <- c()
-for( n in seq_len(N) ){
-  if ( dim(DF1[[n]])[2] < 9) {
-    DF[[n]] <- NULL
-    id.no.var <- append(id.no.var, n)
-  }
-  else{
-    a <- DF1[[n]]
-    a[DF1[[n]] == -999999.9] <- NULL
-    DF[[n]] <- na.omit(a)
-    DF[[n]] <-  DF[[n]][ which( DF[[n]]$alt < 13000 
-                                & DF[[n]]$CO < mean(DF[[n]]$CO)+ 3* sd(DF[[n]]$CO)
-                                & DF[[n]]$H2O < mean(DF[[n]]$H2O)+ 3* sd(DF[[n]]$H2O)
-                                & DF[[n]]$NO < mean(DF[[n]]$NO)+ 3* sd(DF[[n]]$NO)
-                                & DF[[n]]$O3 < mean(DF[[n]]$O3)+ 3 * sd(DF[[n]]$O3))
-                         ,]
-    if ( dim(DF[[n]])[1] <1 ) id.rm <- append( id.rm, n)
-    print( paste0(n, " - ", dim(DF[[n]])[1] ))
-  }
-}
-DF2 <- DF[!sapply(DF, is.null)]
-N <- length(DF2)
-df <- bind_rows(DF2)
-sum(is.na(df)); sum( df == -999999.9)
-
-a <- c(0)
-for( n in 1:N) print( paste0(n, " - ", dim(DF2[[n]]) ))
-for( n in 1:N) if( dim(DF2[[n]])[1] == 0 ) a <- append(a, n)
-a
-DF <- DF2[-a]
-N <- length(DF)
-
-df <- bind_rows(DF)
-
-rm(nc_files, DF1, DF2, file_names)
-
-
-###################
 N <- length(DF)
 
 selected_T <- seq(1,max(df$alt), by = 50 )
 N_T <- length(selected_T )
 new_data <- data.frame(x = selected_T)
-
-weight <- Y.star <- array(NA, dim = c( "var"= p + q, "unit" = N, "Tpoint" = N_T ), dimnames = list( c(y.names, x.names), paste0("N_", seq(1, N) ), paste0("T_", seq(1, N_T) ) ) )
-check.weight <- weight <- YX.star <- array(NA, dim = c( "var"= p + q , "unit" = N, "Tpoint" = N_T ), dimnames = list( c(y.names, x.names), paste0("N_", seq(1, N) ), paste0("T_", seq(1, N_T) ) ) )
-YX.mean <- matrix(0, p +q, N_T); rownames(YX.mean) <- c(y.names,x.names); colnames(YX.mean) <- paste0("T_", seq(1, N_T) ) 
-for( j in seq_len(p+q) ){
-  ## calculate the observations at delected points stored in new_data:
-  for( i in seq_len(N)){
-    y <- DF[[i]][, c(y.names, x.names)[j] ]
-    x <- DF[[i]][,"alt" ]
-    data <- data.frame( y = y, x = x)
-    model_i <- gam(y ~ s(x), data = data)
-    predictions <- predict(model_i, newdata = new_data, type = "response", se.fit = TRUE)
-    w_ji <- 1/((predictions$se.fit + 1)^2)
-    weight[c(y.names, x.names)[j] , i, ] <- w_ji
-    YX.star[c(y.names, x.names)[j] , i, ] <- predictions$fit
-    YX.mean[c(y.names, x.names)[j] , ] <- YX.mean[c(y.names, x.names)[j] , ] + weight[c(y.names, x.names)[j] , i, ] * YX.star[c(y.names, x.names)[j], i, ]
-  }
-  YX.mean[c(y.names, x.names)[j] , ] <- YX.mean[c(y.names, x.names)[j] , ] / apply( weight[c(y.names, x.names)[j] , , ], 2, sum)
-}
 
 ## # SIGMA_j MATRIX : N_t X N_T -dimensional covariance matrices for each variable:  
 sigma_j <- vector( mode = "list", length = p+q)
@@ -246,7 +337,6 @@ for ( iter in seq_len(niter-1)) {
   iter <- iter + 1
 }
 
-
 ### lambda KLCV
 lambda.klcv <- lambda.iteration( data = data.list , rho = rho_estim["KLCV", niter], L = L, p = p,
                                  perc.lmbd.seq = perc.lmbd.seq, weights = weights)
@@ -319,6 +409,9 @@ for (l in seq_len(L)) {
 
 rm(lambda.ebic , b.stim)
 
+#############
+# To visualize the results
+library(igraph)
 
 colnames(KLCV.tht) <- rownames(KLCV.tht) <- y.names
 KLCV.tht[which(KLCV.tht != 0) ] <- 1
@@ -355,8 +448,6 @@ E(net.tht.eBIC )$color <- "black"
 V(net.tht.eBIC)$label <-  expression(O[3],  NO,  H2O, CO)
 plot(net.tht.eBIC,layout=layout.circle ,asp = 1, main = "eBIC")
 
-
-
 colnames(KLCV.B) <- colnames(AIC.B) <- colnames(eBIC.B) <- y.names
 as.numeric(KLCV.B != 0)
 as.numeric(AIC.B != 0)
@@ -376,4 +467,4 @@ labels <- new_data$x
 ## PLOT estimated B(t,t'):
 par(mfrow = c(1,1), cex.lab = 5)
 par( cex.lab = 1)
-heatmap( B.hat, labRow = labels, labCol = labels, Rowv = NA, Colv = NA, ylab = "temp - altitude", xlab = "altitude", margins = c(1.5,1.5))#,  label.cex = 4)
+heatmap( B.hat, labRow = labels, labCol = labels, Rowv = NA, Colv = NA, ylab = "temp - altitude", xlab = "altitude", margins = c(1.5,1.5))
